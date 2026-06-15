@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.4
+// @version      0.1.5
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -76,19 +76,41 @@
   }
 
   function isVisible(el) {
-    if (!el) return false;
+    if (!el || el.nodeType !== 1) return false;
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return true;
-    return !!el.offsetParent;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
-  function findByText(text, exact = true, tags = ['button', 'a', 'span', 'div', 'p']) {
-    for (const tag of tags) {
-      for (const el of document.querySelectorAll(tag)) {
-        const t = (el.textContent || '').trim();
-        if ((exact ? t === text : t.includes(text)) && isVisible(el)) return el;
-      }
+  // Scans every element (incl. custom components like Spectrum sp-button)
+  // and returns the *smallest* (deepest) element whose visible text matches.
+  // Deepest wins because outer wrappers tend to contain the target text plus
+  // a bunch of sibling text, so an exact match on the wrapper is rare and
+  // the leaf is what you actually want to click.
+  function findByText(text, exact = true) {
+    const matches = [];
+    for (const el of document.querySelectorAll('*')) {
+      if (!isVisible(el)) continue;
+      const t = (el.textContent || '').trim();
+      if (!t) continue;
+      if (exact ? t === text : t.includes(text)) matches.push(el);
     }
-    return null;
+    matches.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+    return matches[0] || null;
+  }
+
+  // Snapshot of visible interactive-looking elements for diagnostics
+  function visibleButtonTexts(max = 20) {
+    const sel = 'button, sp-button, sp-action-button, [role="button"], a[role="link"]';
+    return Array.from(document.querySelectorAll(sel))
+      .filter(isVisible)
+      .map(el => {
+        const text = (el.textContent || '').trim().slice(0, 30);
+        const label = el.getAttribute('aria-label') || '';
+        return label ? `${text || '·'}[${label.slice(0, 20)}]` : text;
+      })
+      .filter(s => s)
+      .slice(0, max);
   }
 
   async function waitFor(predicate, timeoutMs = 30_000) {
@@ -115,6 +137,24 @@
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
       }));
     }
+  }
+
+  // Navigate without the browser's "Leave site?" dialog.
+  // Adobe Express registers a beforeunload handler (unsaved changes).
+  // We register one too, in the capture phase, that nukes the prompt
+  // before Adobe's listener runs.
+  function safeNavigate(url) {
+    try {
+      window.onbeforeunload = null;
+      const swallow = (e) => {
+        e.stopImmediatePropagation();
+        delete e.returnValue;
+        e.returnValue = undefined;
+      };
+      window.addEventListener('beforeunload', swallow, { capture: true });
+      window.addEventListener('pagehide',     swallow, { capture: true });
+    } catch {}
+    location.href = url;
   }
 
   function gmCookie(action, payload) {
@@ -445,7 +485,7 @@
       GM_setValue(KEY_DOWNLOAD_DONE, false);
       GM_setValue(KEY_PHASE,         'login');
       await wipeSessionCookies();
-      location.href = 'https://new.express.adobe.com/';
+      safeNavigate('https://new.express.adobe.com/');
     } catch (e) {
       log(`Claim failed: ${e.message || e}`);
     }
@@ -472,7 +512,7 @@
       document.querySelector('input#idBtn_Back'),
       document.querySelector('button[data-report-event="Signin_Submit_Cancel"]'),
       document.querySelector('input[value="No"]'),
-      findByText('No', true, ['button', 'input', 'span']),
+      findByText('No', true),
     ];
     for (const c of candidates) if (c && isVisible(c)) return c;
     return null;
@@ -572,7 +612,7 @@
     if (phase !== 'editor' && !location.search.includes('prompt=')) {
       log('Express logged in — navigating to target prompt');
       GM_setValue(KEY_PHASE, 'editor');
-      location.href = TARGET_URL;
+      safeNavigate(TARGET_URL);
       return false;
     }
 
@@ -599,6 +639,7 @@
         openBtn.click();
       } catch {
         log('No "Open in editor" candidate found');
+        log(`Visible buttons: ${JSON.stringify(visibleButtonTexts())}`);
       }
 
       await sleep(3000);
@@ -608,6 +649,7 @@
       const dlPresent     = document.querySelectorAll('x-icon[name="download"]').length;
       const anyDlIcons    = document.querySelectorAll('[class*="download" i], [aria-label*="download" i]').length;
       log(`Pre-download: url=${location.pathname.slice(0,40)} x-icon=${dlPresent} dl-ish=${anyDlIcons}`);
+      log(`Buttons visible: ${JSON.stringify(visibleButtonTexts())}`);
 
       // Download icon — multiple selector strategies
       const dlIcon = await waitFor(() => {
@@ -615,7 +657,7 @@
           document.querySelector('x-icon[name="download"]') ||
           document.querySelector('[aria-label*="Download" i]') ||
           document.querySelector('button[data-testid*="download" i]') ||
-          findByText('Download', true, ['button']) ||
+          findByText('Download', true) ||
           null
         );
       }, 30_000);
