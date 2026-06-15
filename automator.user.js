@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.2
+// @version      0.1.3
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -580,25 +580,44 @@
   async function runEditorFlow() {
     const acc = GM_getValue(KEY_ACCOUNT);
     if (!acc) return false;
+    log(`Editor flow @ ${location.pathname}${location.search.slice(0, 60)}`);
     try {
-      // Open in editor
+      // Open in editor — try multiple label variants
+      const openLabels = ['Open in editor', 'Open in Editor', 'Edit', 'Customize', 'Open'];
+      let openBtn = null;
       try {
-        const openBtn = await waitFor(() => findByText('Open in editor', true), 30_000);
-        log('Clicking Open in editor');
+        openBtn = await waitFor(() => {
+          for (const label of openLabels) {
+            const b = findByText(label, true);
+            if (b) return b;
+          }
+          return null;
+        }, 30_000);
+        log(`Clicking "${openBtn.textContent.trim()}"`);
         openBtn.click();
       } catch {
-        log('No "Open in editor" — maybe already in editor');
+        log('No "Open in editor" candidate found');
       }
 
       await sleep(3000);
       await maybeCloseTour();
 
-      // Download icon
-      const dlIcon = await waitFor(
-        () => document.querySelector('x-icon[name="download"]'),
-        30_000
-      );
-      log('Clicking download icon');
+      // Diagnostic snapshot before download-icon search
+      const dlPresent     = document.querySelectorAll('x-icon[name="download"]').length;
+      const anyDlIcons    = document.querySelectorAll('[class*="download" i], [aria-label*="download" i]').length;
+      log(`Pre-download: url=${location.pathname.slice(0,40)} x-icon=${dlPresent} dl-ish=${anyDlIcons}`);
+
+      // Download icon — multiple selector strategies
+      const dlIcon = await waitFor(() => {
+        return (
+          document.querySelector('x-icon[name="download"]') ||
+          document.querySelector('[aria-label*="Download" i]') ||
+          document.querySelector('button[data-testid*="download" i]') ||
+          findByText('Download', true, ['button']) ||
+          null
+        );
+      }, 30_000);
+      log(`Clicking download icon (${dlIcon.tagName}${dlIcon.getAttribute('aria-label') ? ' ' + dlIcon.getAttribute('aria-label') : ''})`);
       dlIcon.click();
       await sleep(3000);
 
