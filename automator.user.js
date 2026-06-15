@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Adobe Express Automator
-// @namespace    https://github.com/YOUR_HANDLE/adobe-automator
+// @namespace    https://github.com/YOUR_HANDLE/YOUR_REPO
 // @version      0.1.0
 // @description  Distributed Adobe Express image generation worker
 // @author       you
