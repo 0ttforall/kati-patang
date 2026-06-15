@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.1
+// @version      0.1.2
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -457,6 +457,25 @@
     return false;
   }
 
+  // "Keep me signed in?" detection. Microsoft changes the markup
+  // periodically — current variants:
+  //   <button id="idBtn_Back">No</button>                 (modern)
+  //   <input  id="idBtn_Back" type="button" value="No">   (legacy)
+  // Only treat a button as the KMSI "No" when "Stay signed in" text
+  // is present on the page, to avoid false positives elsewhere.
+  function findKmsiNoButton() {
+    if (!/stay signed in/i.test(document.body.innerText || '')) return null;
+    const candidates = [
+      document.querySelector('button#idBtn_Back'),
+      document.querySelector('input#idBtn_Back'),
+      document.querySelector('button[data-report-event="Signin_Submit_Cancel"]'),
+      document.querySelector('input[value="No"]'),
+      findByText('No', true, ['button', 'input', 'span']),
+    ];
+    for (const c of candidates) if (c && isVisible(c)) return c;
+    return null;
+  }
+
   // Generic login loop — works on Adobe auth, MS login, and any login
   // form Express might briefly show. Idempotent: does nothing if no
   // login inputs are present.
@@ -464,6 +483,16 @@
     log(`Login loop on ${hostLabel}`);
     for (let i = 0; i < MAX_LOGIN_ITERATIONS; i++) {
       if (!GM_getValue(KEY_RUNNING, false)) return false;
+
+      // Handle KMSI FIRST — before any Enter / submit action that
+      // might inadvertently activate the default ("Yes") button.
+      const noBtn = findKmsiNoButton();
+      if (noBtn) {
+        log('Clicking No on "Stay signed in"');
+        noBtn.click();
+        await sleep(3000);
+        continue;
+      }
 
       const emailInput = document.querySelector('input[type="email"]');
       if (emailInput && isVisible(emailInput) && !emailInput.value) {
@@ -491,14 +520,6 @@
           document.querySelector('input[type="submit"]') ||
           document.querySelector('button[type="submit"]');
         if (signin) signin.click(); else pressEnter(pwInput);
-        await sleep(3000);
-        continue;
-      }
-
-      const no = document.querySelector('input[value="No"]');
-      if (no && isVisible(no)) {
-        log('Clicking No on "Stay signed in"');
-        no.click();
         await sleep(3000);
         continue;
       }
