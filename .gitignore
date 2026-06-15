@@ -1,0 +1,7 @@
+*.csv
+*.png
+venv/
+__pycache__/
+pw-automation.py
+*.sql
+.idea/
