@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Adobe Express Automator
-// @namespace    https://github.com/YOUR_HANDLE/YOUR_REPO
-// @version      0.1.0
+// @namespace    https://github.com/0ttforall/kati-patang
+// @version      0.1.1
 // @description  Distributed Adobe Express image generation worker
-// @author       you
+// @author       0ttforall
 // @match        https://new.express.adobe.com/*
 // @match        https://express.adobe.com/*
 // @match        https://login.microsoftonline.com/*
-// @match        https://auth.services.adobe.com/*
+// @match        https://*.services.adobe.com/*
+// @match        https://*.adobe.com/*
+// @match        https://login.live.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
@@ -17,8 +19,8 @@
 // @grant        GM_addStyle
 // @connect      *
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/YOUR_HANDLE/YOUR_REPO/main/automator.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR_HANDLE/YOUR_REPO/main/automator.user.js
+// @updateURL    https://raw.githubusercontent.com/0ttforall/kati-patang/main/automator.user.js
+// @downloadURL  https://raw.githubusercontent.com/0ttforall/kati-patang/main/automator.user.js
 // ==/UserScript==
 
 /* eslint-disable no-undef */
@@ -455,10 +457,11 @@
     return false;
   }
 
-  async function handleMicrosoftLogin() {
-    const acc = GM_getValue(KEY_ACCOUNT);
-    if (!acc) return false;
-    log('On Microsoft login');
+  // Generic login loop — works on Adobe auth, MS login, and any login
+  // form Express might briefly show. Idempotent: does nothing if no
+  // login inputs are present.
+  async function runLoginLoop(acc, hostLabel) {
+    log(`Login loop on ${hostLabel}`);
     for (let i = 0; i < MAX_LOGIN_ITERATIONS; i++) {
       if (!GM_getValue(KEY_RUNNING, false)) return false;
 
@@ -466,10 +469,14 @@
       if (emailInput && isVisible(emailInput) && !emailInput.value) {
         log('Filling email');
         fillInput(emailInput, acc.email);
-        await sleep(200);
-        const next = findByText('Next', true) || document.querySelector('input[type="submit"]');
+        await sleep(300);
+        const next =
+          findByText('Next',     true) ||
+          findByText('Continue', true) ||
+          document.querySelector('input[type="submit"]') ||
+          document.querySelector('button[type="submit"]');
         if (next) next.click(); else pressEnter(emailInput);
-        await sleep(2500);
+        await sleep(3000);
         continue;
       }
 
@@ -477,10 +484,14 @@
       if (pwInput && isVisible(pwInput) && !pwInput.value) {
         log('Filling password');
         fillInput(pwInput, acc.password);
-        await sleep(200);
-        const signin = findByText('Sign in', true) || document.querySelector('input[type="submit"]');
+        await sleep(300);
+        const signin =
+          findByText('Sign in',  true) ||
+          findByText('Continue', true) ||
+          document.querySelector('input[type="submit"]') ||
+          document.querySelector('button[type="submit"]');
         if (signin) signin.click(); else pressEnter(pwInput);
-        await sleep(2500);
+        await sleep(3000);
         continue;
       }
 
@@ -488,33 +499,55 @@
       if (no && isVisible(no)) {
         log('Clicking No on "Stay signed in"');
         no.click();
-        await sleep(2500);
+        await sleep(3000);
         continue;
       }
 
-      await sleep(500);
+      await sleep(700);
     }
     return true;
   }
 
+  async function handleMicrosoftLogin() {
+    const acc = GM_getValue(KEY_ACCOUNT);
+    if (!acc) return false;
+    return await runLoginLoop(acc, 'Microsoft');
+  }
+
   async function handleAdobeAuth() {
-    log('On Adobe auth — letting it redirect');
-    await sleep(5000);
-    return true;
+    const acc = GM_getValue(KEY_ACCOUNT);
+    if (!acc) return false;
+    return await runLoginLoop(acc, 'Adobe auth');
   }
 
   async function handleExpress() {
     const acc = GM_getValue(KEY_ACCOUNT);
     if (!acc) return false;
 
-    // If still on a login-ish path, wait briefly for redirect to settle
-    await sleep(1500);
+    // Give redirects a chance to settle before deciding state
+    await sleep(2500);
 
-    // If we landed on the bare express homepage and haven't gone to TARGET yet,
-    // navigate to the generation URL.
+    // If a login form is still visible on Express, drive it
+    const emailInput = document.querySelector('input[type="email"]');
+    const pwInput    = document.querySelector('input[type="password"]');
+    if ((emailInput && isVisible(emailInput)) || (pwInput && isVisible(pwInput))) {
+      log('Login form on Express — driving login');
+      return await runLoginLoop(acc, 'Express');
+    }
+
+    // If the page is offering "Sign in" / "Log in", click it so we get bounced to the auth flow
+    const signInBtn = findByText('Sign in', true) || findByText('Log in', true);
+    if (signInBtn) {
+      log('Clicking Sign in to start auth flow');
+      signInBtn.click();
+      await sleep(3000);
+      return false; // navigation expected
+    }
+
+    // Looks logged in. Go to the generation URL if we haven't yet.
     const phase = GM_getValue(KEY_PHASE, 'login');
     if (phase !== 'editor' && !location.search.includes('prompt=')) {
-      log('Express loaded — navigating to target prompt');
+      log('Express logged in — navigating to target prompt');
       GM_setValue(KEY_PHASE, 'editor');
       location.href = TARGET_URL;
       return false;
