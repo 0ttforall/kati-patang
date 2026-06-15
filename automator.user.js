@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.3
+// @version      0.1.4
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -271,11 +271,13 @@
   function injectStyle() {
     GM_addStyle(`
       #automator-panel {
-        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+        position: fixed; bottom: 12px; left: 12px; z-index: 2147483647;
         background: #111; color: #eee; font: 12px/1.4 system-ui, sans-serif;
         border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
         min-width: 280px; max-width: 320px; padding: 12px;
+        opacity: 0.92;
       }
+      #automator-panel:hover { opacity: 1; }
       #automator-panel h1 { font-size: 13px; margin: 0 0 8px 0; color: #fff; }
       #automator-panel .row { margin: 4px 0; }
       #automator-panel input {
