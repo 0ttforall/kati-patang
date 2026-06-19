@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.5
+// @version      0.1.6
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -82,35 +82,87 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  // Scans every element (incl. custom components like Spectrum sp-button)
+  // Whether an element belongs to our own panel UI (excluded from
+  // any "find on page" search so we don't click ourselves).
+  function inOurPanel(el) {
+    if (!el || !el.closest) return false;
+    return !!el.closest('#automator-panel');
+  }
+
+  // Walk the entire document AND every open shadowRoot recursively.
+  // Adobe Express renders most of its toolbar inside Spectrum web
+  // components, all of which use open shadow roots, so a plain
+  // document.querySelectorAll('*') misses ~everything.
+  function* deepWalk(root = document) {
+    const stack = [root];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || !node.querySelectorAll) continue;
+      const all = node.querySelectorAll('*');
+      for (const el of all) {
+        yield el;
+        if (el.shadowRoot) stack.push(el.shadowRoot);
+      }
+    }
+  }
+
+  function deepQuery(selector) {
+    for (const el of deepWalk()) {
+      if (el.matches && el.matches(selector)) return el;
+    }
+    return null;
+  }
+
+  function deepQueryAll(selector) {
+    const out = [];
+    for (const el of deepWalk()) {
+      if (el.matches && el.matches(selector)) out.push(el);
+    }
+    return out;
+  }
+
+  // Scans every element (incl. Spectrum components in shadow DOM)
   // and returns the *smallest* (deepest) element whose visible text matches.
-  // Deepest wins because outer wrappers tend to contain the target text plus
-  // a bunch of sibling text, so an exact match on the wrapper is rare and
-  // the leaf is what you actually want to click.
+  // Excludes our own panel descendants.
   function findByText(text, exact = true) {
     const matches = [];
-    for (const el of document.querySelectorAll('*')) {
+    for (const el of deepWalk()) {
       if (!isVisible(el)) continue;
+      if (inOurPanel(el)) continue;
       const t = (el.textContent || '').trim();
       if (!t) continue;
       if (exact ? t === text : t.includes(text)) matches.push(el);
     }
-    matches.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+    matches.sort((a, b) =>
+      (a.querySelectorAll ? a.querySelectorAll('*').length : 0) -
+      (b.querySelectorAll ? b.querySelectorAll('*').length : 0)
+    );
     return matches[0] || null;
   }
 
-  // Snapshot of visible interactive-looking elements for diagnostics
-  function visibleButtonTexts(max = 20) {
-    const sel = 'button, sp-button, sp-action-button, [role="button"], a[role="link"]';
-    return Array.from(document.querySelectorAll(sel))
-      .filter(isVisible)
-      .map(el => {
-        const text = (el.textContent || '').trim().slice(0, 30);
-        const label = el.getAttribute('aria-label') || '';
-        return label ? `${text || '·'}[${label.slice(0, 20)}]` : text;
-      })
-      .filter(s => s)
-      .slice(0, max);
+  // Snapshot of visible interactive-looking elements (across shadow DOM)
+  // for diagnostics. Excludes our own panel.
+  function visibleButtonTexts(max = 25) {
+    const out = [];
+    const seen = new Set();
+    for (const el of deepWalk()) {
+      if (out.length >= max) break;
+      if (!el.matches) continue;
+      const looksClickable =
+        el.matches('button, sp-button, sp-action-button, sp-icon-button, [role="button"], a[role="link"]') ||
+        (el.tagName && el.tagName.toLowerCase().startsWith('sp-') && el.matches('[label],[aria-label]'));
+      if (!looksClickable) continue;
+      if (!isVisible(el)) continue;
+      if (inOurPanel(el)) continue;
+      const text = (el.textContent || '').trim().slice(0, 30);
+      const label = el.getAttribute('aria-label') || el.getAttribute('label') || '';
+      const tag = el.tagName.toLowerCase();
+      const summary = `${tag}:${text || '·'}${label ? `[${label.slice(0, 20)}]` : ''}`;
+      if (seen.has(summary)) continue;
+      seen.add(summary);
+      out.push(summary);
+    }
+    return out;
   }
 
   async function waitFor(predicate, timeoutMs = 30_000) {
@@ -166,7 +218,10 @@
   }
 
   async function wipeSessionCookies() {
-    const domains = ['adobe.com', 'microsoftonline.com', 'microsoft.com', 'live.com', 'office.com'];
+    const domains = [
+      'adobe.com', 'adobelogin.com', 'adobeid.com',
+      'microsoftonline.com', 'microsoft.com', 'live.com', 'office.com'
+    ];
     try {
       const cookies = await gmCookie('list', {});
       let wiped = 0;
@@ -183,6 +238,61 @@
     } catch (e) {
       log(`Cookie wipe failed: ${e.message || e}`);
     }
+    // Also clear localStorage/sessionStorage for the current origin.
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch {}
+  }
+
+  // Click Adobe's profile/avatar icon (top-right) → "Sign out".
+  // We only run this when we're on an express.adobe.com page that
+  // appears to be logged in. Returns true if the sign-out chain
+  // was triggered (caller should still wipe cookies + navigate).
+  async function adobeUiLogout() {
+    if (!location.hostname.includes('adobe.com')) return false;
+    log('Attempting Adobe UI logout');
+
+    // Step 1 — find a profile/avatar trigger anywhere in the DOM (incl. shadow).
+    const profileSelectors = [
+      '[aria-label*="Account" i]',
+      '[aria-label*="Profile" i]',
+      '[aria-label*="profile menu" i]',
+      '[data-testid*="profile" i]',
+      '[data-testid*="account" i]',
+      '[data-testid*="avatar" i]',
+      'sp-action-button[aria-label*="Account" i]',
+      'sp-avatar',
+      'img[alt*="profile" i]',
+    ];
+    let profile = null;
+    for (const sel of profileSelectors) {
+      const cand = deepQuery(sel);
+      if (cand && isVisible(cand) && !inOurPanel(cand)) { profile = cand; break; }
+    }
+    if (!profile) {
+      log('Profile icon not found; will rely on cookie wipe');
+      return false;
+    }
+    log(`Clicking profile (${profile.tagName.toLowerCase()})`);
+    profile.click();
+    await sleep(2000);
+
+    // Step 2 — Sign out in the dropdown.
+    const signOut =
+      findByText('Sign out', true) ||
+      findByText('Sign Out', true) ||
+      findByText('Log out',  true) ||
+      findByText('Log Out',  true) ||
+      findByText('Logout',   true);
+    if (!signOut) {
+      log('Sign out option not visible after profile click');
+      return false;
+    }
+    log('Clicking Sign out');
+    signOut.click();
+    await sleep(3500);
+    return true;
   }
 
   // ===========================================================
@@ -484,6 +594,10 @@
       GM_setValue(KEY_STARTED_AT,    nowSec());
       GM_setValue(KEY_DOWNLOAD_DONE, false);
       GM_setValue(KEY_PHASE,         'login');
+      // Best effort: ask Adobe to sign the previous user out via the UI
+      // (clears server-side session cookies the right way). Then nuke
+      // local cookies + storage as a backstop in case the UI flow failed.
+      await adobeUiLogout();
       await wipeSessionCookies();
       safeNavigate('https://new.express.adobe.com/');
     } catch (e) {
@@ -645,18 +759,20 @@
       await sleep(3000);
       await maybeCloseTour();
 
-      // Diagnostic snapshot before download-icon search
-      const dlPresent     = document.querySelectorAll('x-icon[name="download"]').length;
-      const anyDlIcons    = document.querySelectorAll('[class*="download" i], [aria-label*="download" i]').length;
+      // Diagnostic snapshot before download-icon search (shadow-DOM aware)
+      const dlPresent     = deepQueryAll('x-icon[name="download"]').length;
+      const anyDlIcons    = deepQueryAll('[class*="download" i], [aria-label*="download" i]').length;
       log(`Pre-download: url=${location.pathname.slice(0,40)} x-icon=${dlPresent} dl-ish=${anyDlIcons}`);
       log(`Buttons visible: ${JSON.stringify(visibleButtonTexts())}`);
 
-      // Download icon — multiple selector strategies
+      // Download icon — multiple selector strategies, all shadow-DOM aware
       const dlIcon = await waitFor(() => {
         return (
-          document.querySelector('x-icon[name="download"]') ||
-          document.querySelector('[aria-label*="Download" i]') ||
-          document.querySelector('button[data-testid*="download" i]') ||
+          deepQuery('x-icon[name="download"]') ||
+          deepQuery('[aria-label*="Download" i]') ||
+          deepQuery('button[data-testid*="download" i]') ||
+          deepQuery('sp-action-button[aria-label*="Download" i]') ||
+          deepQuery('sp-icon-button[aria-label*="Download" i]') ||
           findByText('Download', true) ||
           null
         );
