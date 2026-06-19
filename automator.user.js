@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.6
+// @version      0.1.7
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -243,6 +243,30 @@
       localStorage.clear();
       sessionStorage.clear();
     } catch {}
+  }
+
+  // True if we appear to be signed into Adobe (so logout/wipe make sense).
+  // False means we're already on a login page, or no auth markers are
+  // present — in which case we skip both logout and the cookie wipe.
+  function appearsLoggedInToAdobe() {
+    if (!location.hostname.includes('adobe.com')) return false;
+    // On any auth subdomain we are by definition signed out / in-flight
+    if (/(auth|adobeid|login|ims)\./i.test(location.hostname)) return false;
+    // If a Sign in / Log in CTA is visible, treated as signed out
+    if (findByText('Sign in', true) || findByText('Log in', true)) return false;
+    // Look for any profile/avatar marker
+    const markers = [
+      '[aria-label*="Account" i]',
+      '[aria-label*="Profile" i]',
+      '[data-testid*="profile" i]',
+      '[data-testid*="avatar" i]',
+      'sp-avatar',
+    ];
+    for (const sel of markers) {
+      const el = deepQuery(sel);
+      if (el && isVisible(el) && !inOurPanel(el)) return true;
+    }
+    return false;
   }
 
   // Click Adobe's profile/avatar icon (top-right) → "Sign out".
@@ -594,11 +618,15 @@
       GM_setValue(KEY_STARTED_AT,    nowSec());
       GM_setValue(KEY_DOWNLOAD_DONE, false);
       GM_setValue(KEY_PHASE,         'login');
-      // Best effort: ask Adobe to sign the previous user out via the UI
-      // (clears server-side session cookies the right way). Then nuke
-      // local cookies + storage as a backstop in case the UI flow failed.
-      await adobeUiLogout();
-      await wipeSessionCookies();
+      // Only bother with logout / cookie wipe if a previous session
+      // looks active. Skipping when already signed out saves a few
+      // seconds and avoids the "Leave this site?" prompt entirely.
+      if (appearsLoggedInToAdobe()) {
+        await adobeUiLogout();
+        await wipeSessionCookies();
+      } else {
+        log('Not signed in — skipping logout & cookie wipe');
+      }
       safeNavigate('https://new.express.adobe.com/');
     } catch (e) {
       log(`Claim failed: ${e.message || e}`);
@@ -756,38 +784,56 @@
         log(`Visible buttons: ${JSON.stringify(visibleButtonTexts())}`);
       }
 
-      await sleep(3000);
+      // Python script waits 5s after Open in editor for the canvas to finish
+      // loading before looking for the download control. Match that.
+      await sleep(5000);
       await maybeCloseTour();
 
       // Diagnostic snapshot before download-icon search (shadow-DOM aware)
       const dlPresent     = deepQueryAll('x-icon[name="download"]').length;
       const anyDlIcons    = deepQueryAll('[class*="download" i], [aria-label*="download" i]').length;
       log(`Pre-download: url=${location.pathname.slice(0,40)} x-icon=${dlPresent} dl-ish=${anyDlIcons}`);
-      log(`Buttons visible: ${JSON.stringify(visibleButtonTexts())}`);
 
-      // Download icon — multiple selector strategies, all shadow-DOM aware
-      const dlIcon = await waitFor(() => {
-        return (
-          deepQuery('x-icon[name="download"]') ||
-          deepQuery('[aria-label*="Download" i]') ||
-          deepQuery('button[data-testid*="download" i]') ||
-          deepQuery('sp-action-button[aria-label*="Download" i]') ||
-          deepQuery('sp-icon-button[aria-label*="Download" i]') ||
-          findByText('Download', true) ||
-          null
-        );
+      // Download trigger — Adobe's actual button is a Spectrum
+      // sp-action-button with aria-label="Download". The x-icon is just
+      // a child; clicking the icon doesn't always reach the button's
+      // click handler. Prefer the button itself; fall back to closest()
+      // from the icon; final fallback is whatever has the aria-label.
+      const dlButton = await waitFor(() => {
+        const btn =
+          deepQuery('sp-action-button[aria-label="Download"]') ||
+          deepQuery('sp-icon-button[aria-label="Download"]')   ||
+          deepQuery('[role="button"][aria-label="Download"]')  ||
+          deepQuery('button[aria-label="Download"]')           ||
+          deepQuery('[aria-label*="Download" i]:not(x-icon)')  ||
+          null;
+        if (btn) return btn;
+        // Last resort: find the icon and walk up to its enclosing button
+        const icon = deepQuery('x-icon[name="download"]');
+        if (icon) {
+          const wrapper = icon.closest('sp-action-button, sp-icon-button, button, [role="button"]');
+          return wrapper || icon;
+        }
+        return null;
       }, 30_000);
-      log(`Clicking download icon (${dlIcon.tagName}${dlIcon.getAttribute('aria-label') ? ' ' + dlIcon.getAttribute('aria-label') : ''})`);
-      dlIcon.click();
+      log(`Clicking download button (${dlButton.tagName.toLowerCase()}${dlButton.getAttribute('aria-label') ? ' "' + dlButton.getAttribute('aria-label') + '"' : ''})`);
+      dlButton.click();
       await sleep(3000);
 
       await maybeCloseTour();
 
-      // Final Download button — Adobe shows this in a dropdown/modal
+      // Final "Download" button in the dropdown — Python uses
+      // get_by_text("Download", exact=True).last; mirror that across
+      // shadow DOM by walking everything and picking the last match.
       const finalBtn = await waitFor(() => {
-        const all = Array.from(document.querySelectorAll('button, span, div'))
-          .filter(el => (el.textContent || '').trim() === 'Download' && isVisible(el));
-        return all[all.length - 1] || null;
+        let last = null;
+        for (const el of deepWalk()) {
+          if (!isVisible(el)) continue;
+          if (inOurPanel(el)) continue;
+          const t = (el.textContent || '').trim();
+          if (t === 'Download') last = el;
+        }
+        return last;
       }, 15_000);
       log('Clicking final Download');
       finalBtn.click();
