@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.1
+// @version      0.2.2
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -788,20 +788,28 @@
 
       await maybeCloseTour();
 
-      // Final "Download" button in the dropdown — Python uses
-      // get_by_text("Download", exact=True).last; mirror that across
-      // shadow DOM by walking everything and picking the last match.
+      // Final "Download" button in the panel. Adobe first shows a
+      // "We are working on your downloads..." state where the panel
+      // renders labels/headings containing the word "Download" but no
+      // actionable CTA. Require an enabled, real button-like element,
+      // and skip the opener we already clicked, so we naturally wait
+      // out the preparing state instead of clicking a non-button.
       const finalBtn = await waitFor(() => {
         let last = null;
         for (const el of deepWalk()) {
           if (!isVisible(el)) continue;
+          if (!isEnabled(el)) continue;
           if (inOurPanel(el)) continue;
+          if (el === dlButton) continue;
+          if (!el.matches || !el.matches(
+            'button, sp-button, sp-action-button, sp-icon-button, [role="button"]'
+          )) continue;
           const t = (el.textContent || '').trim();
           if (t === 'Download') last = el;
         }
         return last;
-      }, 15_000);
-      log('Clicking final Download');
+      }, 90_000);
+      log(`Clicking final Download (${finalBtn.tagName.toLowerCase()})`);
       finalBtn.click();
 
       // Wait for download interception to fire
@@ -817,6 +825,15 @@
       const duration = nowSec() - GM_getValue(KEY_STARTED_AT, nowSec());
       log(`Marking done (${duration.toFixed(1)}s)`);
       await markDone(acc.id, duration);
+
+      // Clear per-account state BEFORE logout. adobeUiLogout navigates
+      // the page (auth.services.adobe.com redirect), which kills this
+      // JS context — the finally block below never runs on that path.
+      // Without this, the next page load sees a stale KEY_ACCOUNT and
+      // KEY_PHASE='editor', re-enters runEditorFlow, and markFailed's
+      // update flips the just-done row to 'failed'.
+      GM_setValue(KEY_ACCOUNT, null);
+      GM_setValue(KEY_PHASE, 'login');
 
       // Sign out immediately after every successful download so the
       // next claim starts from a clean session. Non-fatal if it fails

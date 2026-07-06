@@ -109,13 +109,16 @@ begin
     raise exception 'must be authenticated';
   end if;
 
+  -- Only transition from 'claimed' to 'failed'. Never overwrite a row
+  -- that already reached 'done' — a stale worker context after logout
+  -- redirect can otherwise clobber a successful run.
   update accounts
   set    status           = 'failed',
          completed_at     = now(),
          failure_stage    = p_stage,
          last_error       = p_error,
          duration_seconds = p_duration
-  where  id = p_id and claimed_by = auth.uid();
+  where  id = p_id and claimed_by = auth.uid() and status = 'claimed';
 end;
 $$;
 
