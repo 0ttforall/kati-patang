@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.9
+// @version      0.2.0
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -14,7 +14,6 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
-// @grant        GM_download
 // @grant        GM_addStyle
 // @connect      *
 // @run-at       document-idle
@@ -386,7 +385,11 @@
   const markFailed  = (id, stage, error, duration)  => supaRpc('mark_account_failed', { p_id: id, p_stage: stage, p_error: String(error).slice(0, 500), p_duration: duration });
 
   // ===========================================================
-  // Download interception — rename to <email_domain>.png
+  // Download rename — mutate the anchor's `download` attribute in
+  // place so the browser's native download flow saves the file to
+  // the user's real Downloads folder with our chosen name. Do NOT
+  // preventDefault — GM_download-based rewriting broke on Adobe's
+  // blob: / signed-URL downloads and left nothing on disk.
   // ===========================================================
   function setupDownloadHook() {
     const handler = (e) => {
@@ -396,16 +399,9 @@
       if (!a || !a.href || a.href.startsWith('javascript:')) return;
 
       const filename = `${sanitizeFilename(acc.email)}.png`;
-      log(`Intercepting download → ${filename}`);
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      GM_download({
-        url:  a.href,
-        name: filename,
-        saveAs: false,
-        onload:  () => { log('Download saved'); GM_setValue(KEY_DOWNLOAD_DONE, true); },
-        onerror: (err) => log(`GM_download err: ${err && (err.error || err.details) || err}`)
-      });
+      a.setAttribute('download', filename);
+      log(`Renaming download → ${filename}`);
+      GM_setValue(KEY_DOWNLOAD_DONE, true);
     };
     document.addEventListener('click', handler, true);
   }
@@ -828,6 +824,12 @@
       const duration = nowSec() - GM_getValue(KEY_STARTED_AT, nowSec());
       log(`Marking done (${duration.toFixed(1)}s)`);
       await markDone(acc.id, duration);
+
+      // Sign out immediately after every successful download so the
+      // next claim starts from a clean session. Non-fatal if it fails
+      // — claimAndLaunch retries a logout before proceeding.
+      log('Logging out after download');
+      try { await adobeUiLogout(); } catch (e) { log(`Logout after download failed: ${e.message || e}`); }
     } catch (e) {
       const duration = nowSec() - GM_getValue(KEY_STARTED_AT, nowSec());
       log(`FAILED: ${e.message || e}`);
