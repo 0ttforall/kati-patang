@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.8
+// @version      0.1.9
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -14,7 +14,6 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
-// @grant        GM_cookie
 // @grant        GM_download
 // @grant        GM_addStyle
 // @connect      *
@@ -206,45 +205,9 @@
     location.href = url;
   }
 
-  function gmCookie(action, payload) {
-    return new Promise((resolve, reject) => {
-      GM_cookie(action, payload, (result, err) => {
-        if (err) reject(err); else resolve(result);
-      });
-    });
-  }
-
-  async function wipeSessionCookies() {
-    const domains = [
-      'adobe.com', 'adobelogin.com', 'adobeid.com',
-      'microsoftonline.com', 'microsoft.com', 'live.com', 'office.com'
-    ];
-    try {
-      const cookies = await gmCookie('list', {});
-      let wiped = 0;
-      for (const c of cookies || []) {
-        if (domains.some(d => c.domain.includes(d))) {
-          await gmCookie('delete', {
-            name: c.name,
-            url:  `https://${c.domain.replace(/^\./, '')}${c.path || '/'}`
-          });
-          wiped++;
-        }
-      }
-      log(`Cookie wipe: ${wiped}`);
-    } catch (e) {
-      log(`Cookie wipe failed: ${e.message || e}`);
-    }
-    // Also clear localStorage/sessionStorage for the current origin.
-    try {
-      localStorage.clear();
-      sessionStorage.clear();
-    } catch {}
-  }
-
-  // True if we appear to be signed into Adobe (so logout/wipe make sense).
+  // True if we appear to be signed into Adobe (so a UI logout makes sense).
   // False means we're already on a login page, or no auth markers are
-  // present — in which case we skip both logout and the cookie wipe.
+  // present — in which case we skip logout entirely.
   function appearsLoggedInToAdobe() {
     if (!location.hostname.includes('adobe.com')) return false;
     // On any auth subdomain we are by definition signed out / in-flight
@@ -266,10 +229,11 @@
     return false;
   }
 
-  // Click Adobe's profile/avatar icon (top-right) → "Sign out".
-  // We only run this when we're on an express.adobe.com page that
-  // appears to be logged in. Returns true if the sign-out chain
-  // was triggered (caller should still wipe cookies + navigate).
+  // Click Adobe's profile/avatar icon (top-right) → "Sign out", then wait
+  // until the page actually reflects a signed-out state (URL flips to an
+  // auth subdomain, or logged-in markers disappear). Returns true only if
+  // the sign-out chain completed. Never touches cookies — Adobe's own
+  // logout endpoints are trusted to clear the session properly.
   async function adobeUiLogout() {
     if (!location.hostname.includes('adobe.com')) return false;
     log('Attempting Adobe UI logout');
@@ -292,7 +256,7 @@
       if (cand && isVisible(cand) && !inOurPanel(cand)) { profile = cand; break; }
     }
     if (!profile) {
-      log('Profile icon not found; will rely on cookie wipe');
+      log('Profile icon not found — cannot UI-logout');
       return false;
     }
     log(`Clicking profile (${profile.tagName.toLowerCase()})`);
@@ -312,8 +276,22 @@
     }
     log('Clicking Sign out');
     signOut.click();
-    await sleep(3500);
-    return true;
+
+    // Step 3 — wait for the sign-out to actually take effect. Adobe
+    // redirects through auth.services.adobe.com and eventually lands
+    // on a signed-out state. Poll until either the URL moves to an
+    // auth host or the logged-in markers stop appearing.
+    try {
+      await waitFor(() => {
+        if (/(auth|adobeid|login|ims)\./i.test(location.hostname)) return true;
+        return !appearsLoggedInToAdobe();
+      }, 15_000);
+      log('Sign-out confirmed');
+      return true;
+    } catch {
+      log('Sign-out did not confirm within 15s');
+      return false;
+    }
   }
 
   // ===========================================================
@@ -615,14 +593,20 @@
       GM_setValue(KEY_STARTED_AT,    nowSec());
       GM_setValue(KEY_DOWNLOAD_DONE, false);
       GM_setValue(KEY_PHASE,         'login');
-      // Only bother with logout / cookie wipe if a previous session
-      // looks active. Skipping when already signed out saves a few
-      // seconds and avoids the "Leave this site?" prompt entirely.
+      // Only bother with logout if a previous session looks active.
+      // Cookies are never wiped — Adobe's own sign-out flow is the
+      // only mechanism used to end a session.
       if (appearsLoggedInToAdobe()) {
-        await adobeUiLogout();
-        await wipeSessionCookies();
+        const ok = await adobeUiLogout();
+        if (!ok) {
+          log('UI logout failed — aborting claim to avoid wrong-session run');
+          try { await markFailed(a.id, 'logout', 'UI logout failed', 0); } catch {}
+          GM_setValue(KEY_ACCOUNT, null);
+          GM_setValue(KEY_PHASE,   'login');
+          return;
+        }
       } else {
-        log('Not signed in — skipping logout & cookie wipe');
+        log('Not signed in — skipping logout');
       }
       safeNavigate('https://new.express.adobe.com/');
     } catch (e) {
