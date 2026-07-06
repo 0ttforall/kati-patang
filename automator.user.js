@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.1.7
+// @version      0.1.8
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -82,6 +82,28 @@
     return rect.width > 0 && rect.height > 0;
   }
 
+  // Adobe renders "Open in editor" while the image is still generating
+  // but marks it disabled. Spectrum web components use the `disabled`
+  // attribute; some wrappers use `aria-disabled`. Check both, and walk
+  // up to the closest button ancestor since findByText often returns
+  // the text-bearing child rather than the button itself.
+  function isEnabled(el) {
+    if (!el) return false;
+    if (el.disabled === true) return false;
+    if (el.hasAttribute && el.hasAttribute('disabled')) return false;
+    const aria = el.getAttribute && el.getAttribute('aria-disabled');
+    if (aria === 'true') return false;
+    const btn = el.closest && el.closest(
+      'button, sp-button, sp-action-button, sp-icon-button, [role="button"]'
+    );
+    if (btn && btn !== el) {
+      if (btn.disabled) return false;
+      if (btn.hasAttribute('disabled')) return false;
+      if (btn.getAttribute('aria-disabled') === 'true') return false;
+    }
+    return true;
+  }
+
   // Whether an element belongs to our own panel UI (excluded from
   // any "find on page" search so we don't click ourselves).
   function inOurPanel(el) {
@@ -138,31 +160,6 @@
       (b.querySelectorAll ? b.querySelectorAll('*').length : 0)
     );
     return matches[0] || null;
-  }
-
-  // Snapshot of visible interactive-looking elements (across shadow DOM)
-  // for diagnostics. Excludes our own panel.
-  function visibleButtonTexts(max = 25) {
-    const out = [];
-    const seen = new Set();
-    for (const el of deepWalk()) {
-      if (out.length >= max) break;
-      if (!el.matches) continue;
-      const looksClickable =
-        el.matches('button, sp-button, sp-action-button, sp-icon-button, [role="button"], a[role="link"]') ||
-        (el.tagName && el.tagName.toLowerCase().startsWith('sp-') && el.matches('[label],[aria-label]'));
-      if (!looksClickable) continue;
-      if (!isVisible(el)) continue;
-      if (inOurPanel(el)) continue;
-      const text = (el.textContent || '').trim().slice(0, 30);
-      const label = el.getAttribute('aria-label') || el.getAttribute('label') || '';
-      const tag = el.tagName.toLowerCase();
-      const summary = `${tag}:${text || '·'}${label ? `[${label.slice(0, 20)}]` : ''}`;
-      if (seen.has(summary)) continue;
-      seen.add(summary);
-      out.push(summary);
-    }
-    return out;
   }
 
   async function waitFor(predicate, timeoutMs = 30_000) {
@@ -766,23 +763,19 @@
     if (!acc) return false;
     log(`Editor flow @ ${location.pathname}${location.search.slice(0, 60)}`);
     try {
-      // Open in editor — try multiple label variants
+      // Open in editor — wait until the button is BOTH visible AND enabled.
+      // While generation is in progress Adobe renders the button disabled;
+      // clicking it early is a no-op and cascades into a doomed download search.
       const openLabels = ['Open in editor', 'Open in Editor', 'Edit', 'Customize', 'Open'];
-      let openBtn = null;
-      try {
-        openBtn = await waitFor(() => {
-          for (const label of openLabels) {
-            const b = findByText(label, true);
-            if (b) return b;
-          }
-          return null;
-        }, 30_000);
-        log(`Clicking "${openBtn.textContent.trim()}"`);
-        openBtn.click();
-      } catch {
-        log('No "Open in editor" candidate found');
-        log(`Visible buttons: ${JSON.stringify(visibleButtonTexts())}`);
-      }
+      const openBtn = await waitFor(() => {
+        for (const label of openLabels) {
+          const b = findByText(label, true);
+          if (b && isEnabled(b)) return b;
+        }
+        return null;
+      }, 180_000);
+      log(`Clicking "${openBtn.textContent.trim()}" (enabled)`);
+      openBtn.click();
 
       // Python script waits 5s after Open in editor for the canvas to finish
       // loading before looking for the download control. Match that.
