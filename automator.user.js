@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.0
+// @version      0.2.1
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -67,10 +67,6 @@
     while (tail.length > 80) tail.shift();
     GM_setValue(KEY_LOG, tail);
     renderLog();
-  }
-
-  function sanitizeFilename(email) {
-    return email.replace('@', '_').replace(/[\/\\?%*:|"<>]/g, '_');
   }
 
   function isVisible(el) {
@@ -385,11 +381,11 @@
   const markFailed  = (id, stage, error, duration)  => supaRpc('mark_account_failed', { p_id: id, p_stage: stage, p_error: String(error).slice(0, 500), p_duration: duration });
 
   // ===========================================================
-  // Download rename — mutate the anchor's `download` attribute in
-  // place so the browser's native download flow saves the file to
-  // the user's real Downloads folder with our chosen name. Do NOT
-  // preventDefault — GM_download-based rewriting broke on Adobe's
-  // blob: / signed-URL downloads and left nothing on disk.
+  // Download detection — observe the final Download click so the
+  // editor flow can stop waiting. We do NOT modify the anchor, do
+  // NOT preventDefault, and do NOT re-issue via GM_download; the
+  // browser's own download flow handles the save with Adobe's
+  // default filename, straight into the user's Downloads folder.
   // ===========================================================
   function setupDownloadHook() {
     const handler = (e) => {
@@ -397,10 +393,7 @@
       if (!acc) return;
       const a = e.target.closest && e.target.closest('a[download], a[href*=".png"], a[href*=".jpg"], a[href*=".jpeg"]');
       if (!a || !a.href || a.href.startsWith('javascript:')) return;
-
-      const filename = `${sanitizeFilename(acc.email)}.png`;
-      a.setAttribute('download', filename);
-      log(`Renaming download → ${filename}`);
+      log('Download click detected');
       GM_setValue(KEY_DOWNLOAD_DONE, true);
     };
     document.addEventListener('click', handler, true);
