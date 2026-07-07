@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.6
+// @version      0.2.7
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -678,6 +678,31 @@
         noBtn.click();
         await sleep(3000);
         continue;
+      }
+
+      // Microsoft's "Pick an account" screen appears when previous
+      // sessions are remembered on this device. There is no email input
+      // to fill on that page — just a list of account tiles and a
+      // "Use another account" tile at the bottom. Click that one so
+      // Microsoft returns us to the normal email-entry screen and the
+      // rest of this loop can take over.
+      if (location.hostname.includes('login.microsoftonline.com')) {
+        let useAnother =
+          document.querySelector('#otherTile, [data-report-event*="UseAnotherAccount" i]');
+        if (!useAnother) {
+          const textEl = findByText('Use another account', true);
+          if (textEl) {
+            useAnother = textEl.closest(
+              'a, button, [role="button"], [role="link"], .tile-container'
+            ) || textEl;
+          }
+        }
+        if (useAnother && isVisible(useAnother)) {
+          log('Account picker seen — clicking "Use another account"');
+          useAnother.click();
+          await sleep(3000);
+          continue;
+        }
       }
 
       const emailInput = document.querySelector('input[type="email"]');
