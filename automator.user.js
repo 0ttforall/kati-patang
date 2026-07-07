@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.2
+// @version      0.2.3
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -719,11 +719,17 @@
       return false; // navigation expected
     }
 
-    // Looks logged in. Go to the generation URL if we haven't yet.
+    // If we're not on the prompt URL, navigate there. This may trigger
+    // Adobe's auth flow (which we'll handle on the next page load) or,
+    // if already authenticated, load the prompt directly. Don't flip
+    // KEY_PHASE to 'editor' yet — Adobe often drops the query string on
+    // post-login redirect and lands us back at "/?postlogin=true".
+    // Setting the phase prematurely used to send runEditorFlow off on
+    // the wrong URL and stall waiting for an "Open in editor" button
+    // that only exists on the prompt URL.
     const phase = GM_getValue(KEY_PHASE, 'login');
     if (phase !== 'editor' && !location.search.includes('prompt=')) {
-      log('Express logged in — navigating to target prompt');
-      GM_setValue(KEY_PHASE, 'editor');
+      log('Not on prompt URL — navigating to target prompt');
       safeNavigate(TARGET_URL);
       return false;
     }
@@ -735,6 +741,10 @@
     const acc = GM_getValue(KEY_ACCOUNT);
     if (!acc) return false;
     log(`Editor flow @ ${location.pathname}${location.search.slice(0, 60)}`);
+    // Now that we're actually running the editor flow, mark the phase
+    // so a mid-flow SPA navigation (e.g. after clicking "Open in editor")
+    // doesn't cause handleExpress to bounce us back to the prompt URL.
+    GM_setValue(KEY_PHASE, 'editor');
     try {
       // Open in editor — wait until the button is BOTH visible AND enabled.
       // While generation is in progress Adobe renders the button disabled;
