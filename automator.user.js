@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.7
+// @version      0.2.8
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -42,24 +42,23 @@
   const MAX_LOGIN_ITERATIONS = 30;
   const NO_WORK_WAIT_MS      = 30_000;
   const DOWNLOAD_WAIT_MS     = 60_000;
-  // After we detect the download click, hold on the current tab for
-  // this long before navigating away. The click event fires the instant
-  // Adobe calls a.click(); the browser still needs time to read the
-  // blob and flush bytes to disk. Navigating too soon revokes the
-  // blob URL and truncates the file — this settle wait is what turns
-  // "some files land in Downloads" into "all files land in Downloads".
-  const DOWNLOAD_SETTLE_MS   = 10_000;
+  // If nothing has been logged for this long while an account is
+  // claimed, treat the tab as stuck and restart from the prompt URL.
+  // Threshold must be > any legitimate quiet wait (the 180s "Open in
+  // editor" wait is the longest one), so 5 min is comfortable.
+  const STUCK_MS             = 5 * 60 * 1000;
 
   // ===========================================================
   // Persisted state keys (Tampermonkey GM_setValue)
   // ===========================================================
-  const KEY_SESSION       = 'supabase_session';
-  const KEY_RUNNING       = 'is_running';
-  const KEY_ACCOUNT       = 'current_account';
-  const KEY_STARTED_AT    = 'account_started_at';
-  const KEY_PHASE         = 'phase';
-  const KEY_LOG           = 'log_tail';
-  const KEY_DOWNLOAD_DONE = 'download_done';
+  const KEY_SESSION          = 'supabase_session';
+  const KEY_RUNNING          = 'is_running';
+  const KEY_ACCOUNT          = 'current_account';
+  const KEY_STARTED_AT       = 'account_started_at';
+  const KEY_PHASE            = 'phase';
+  const KEY_LOG              = 'log_tail';
+  const KEY_DOWNLOAD_DONE    = 'download_done';
+  const KEY_LAST_ACTIVITY_AT = 'last_activity_at';
 
   // ===========================================================
   // Tiny utilities
@@ -73,6 +72,8 @@
     tail.push({ t: new Date().toISOString(), msg: String(msg) });
     while (tail.length > 80) tail.shift();
     GM_setValue(KEY_LOG, tail);
+    // Heartbeat for the watchdog — see setupStuckWatchdog() below.
+    GM_setValue(KEY_LAST_ACTIVITY_AT, Date.now());
     renderLog();
   }
 
@@ -890,13 +891,7 @@
         if (GM_getValue(KEY_DOWNLOAD_DONE)) break;
         await sleep(500);
       }
-      if (GM_getValue(KEY_DOWNLOAD_DONE)) {
-        // Hold on this page long enough for the browser to actually
-        // finish writing the blob to disk before adobeUiLogout below
-        // navigates us away and revokes the blob URL.
-        log(`Download click seen — settling ${DOWNLOAD_SETTLE_MS / 1000}s before navigating`);
-        await sleep(DOWNLOAD_SETTLE_MS);
-      } else {
+      if (!GM_getValue(KEY_DOWNLOAD_DONE)) {
         log('Warning: download interception did not confirm save');
       }
 
@@ -955,10 +950,32 @@
   // ===========================================================
   // Boot
   // ===========================================================
+  // Every 30s, check whether the flow has emitted a log line recently.
+  // A page can freeze mid-anything (Adobe loading spinner never
+  // resolves, silent modal, a page that renders but never triggers
+  // our selectors). If no heartbeat for STUCK_MS while an account is
+  // claimed and the runner is on, reset the phase and reload the
+  // prompt URL so the flow restarts cleanly.
+  function setupStuckWatchdog() {
+    setInterval(() => {
+      if (!GM_getValue(KEY_RUNNING, false)) return;
+      if (!GM_getValue(KEY_ACCOUNT))        return;
+      const last = GM_getValue(KEY_LAST_ACTIVITY_AT, 0);
+      if (!last) return;
+      const idleMs = Date.now() - last;
+      if (idleMs < STUCK_MS) return;
+      log(`Watchdog: idle ${Math.round(idleMs / 1000)}s — restarting from prompt URL`);
+      GM_setValue(KEY_LAST_ACTIVITY_AT, Date.now());
+      GM_setValue(KEY_PHASE, 'login');
+      safeNavigate(TARGET_URL);
+    }, 30_000);
+  }
+
   function init() {
     if (document.getElementById('automator-panel')) return;
     injectStyle();
     setupDownloadHook();
+    setupStuckWatchdog();
     renderPanel();
     log(`Loaded on ${location.hostname}`);
     if (GM_getValue(KEY_RUNNING, false) && GM_getValue(KEY_SESSION)) drive();

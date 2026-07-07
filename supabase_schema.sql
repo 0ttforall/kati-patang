@@ -25,17 +25,17 @@ create index if not exists accounts_claimed_by_idx   on accounts (claimed_by);
 
 -- ============================================================
 -- claim_next_account: atomic claim with stale-TTL recovery AND
--- bounded retry on failed rows.
+-- unbounded retry on failed rows.
 --
 -- A row is eligible if any of:
 --   - status = 'pending'                          (never tried)
---   - status = 'failed'  and attempts < max_attempts  (transient fail)
+--   - status = 'failed'                           (retry indefinitely)
 --   - status = 'claimed' and claimed_at older than stale_minutes
 --                                                 (worker crashed)
 --
--- Rows that fail max_attempts times are parked in 'failed' for
--- human review (check last_error / failure_stage). Bump max_attempts
--- or reset rows manually if you want them retried again.
+-- Ordering keeps freshest-failure last so we cycle through everything
+-- rather than hammering one row. claimed_by is always overwritten to
+-- the new claimer, so any worker can pick up a previously failed row.
 -- ============================================================
 create or replace function claim_next_account()
 returns accounts
@@ -46,7 +46,6 @@ as $$
 declare
   result accounts;
   stale_minutes constant int := 5;
-  max_attempts  constant int := 5;
 begin
   if auth.uid() is null then
     raise exception 'must be authenticated';
@@ -60,7 +59,7 @@ begin
   where  id = (
     select id from accounts
     where  status = 'pending'
-       or (status = 'failed'  and attempts < max_attempts)
+       or  status = 'failed'
        or (status = 'claimed' and claimed_at < now() - (stale_minutes || ' minutes')::interval)
     order  by claimed_at nulls first, created_at
     limit  1
