@@ -78,8 +78,24 @@ To stop: click **Pause** in the panel. It stops cleanly after the current accoun
 - **Plug the laptop in.** Long runs are CPU/network-heavy and drain battery fast.
 - **Don't close Chrome mid-run.** In-flight downloads get cancelled.
 - **Empty the Downloads folder periodically** so it doesn't bloat.
-- **Don't run two instances on the same computer.** They'd fight for the same tab.
 - **You can run instances on multiple computers.** Each worker will claim different rows from the shared queue automatically.
+
+### Running multiple tabs in parallel (same computer, one worker)
+
+You can open Adobe Express in multiple tabs simultaneously — each tab claims and processes a *different* account concurrently, roughly N× throughput for N tabs. All tabs share the same worker sign-in and Downloads folder.
+
+Setup once per tab:
+
+1. Open a new tab (`Ctrl+T` / `Cmd+T`) — a **fresh** tab, not a duplicated one.
+2. Go to `https://new.express.adobe.com/`. The panel appears in the bottom-left with a small `tab <id>` label in the header so you can tell tabs apart.
+3. Click **Start** in *each* tab you want to work.
+
+Practical caps and caveats:
+
+- **2–4 tabs is usually the sweet spot.** More than that and CPU / bandwidth become the bottleneck, and Chrome's per-tab throttling on backgrounded tabs kicks in.
+- **Duplicating a tab (`Ctrl+click reload`, right-click → Duplicate) does NOT count as a new tab.** It copies the tab's session state, so the duplicate shares flow state with the original. Always open new tabs from scratch.
+- **Pause / Start is per-tab.** Signing out is global (kicks you out of the Supabase worker in all tabs).
+- **Multiple downloads across tabs are fine** as long as you completed step 2.3 (allow automatic downloads for Adobe Express).
 
 ---
 

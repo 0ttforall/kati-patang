@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.8
+// @version      0.3.0
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -51,14 +51,40 @@
   // ===========================================================
   // Persisted state keys (Tampermonkey GM_setValue)
   // ===========================================================
+  // Per-tab identifier — persists across in-tab navigations via
+  // sessionStorage, fresh in every newly opened tab. This is what lets
+  // multiple tabs run in parallel without clobbering each other's
+  // per-account flow state in the shared GM_setValue store.
+  //
+  // NOTE: duplicating a tab (Ctrl+click or "Duplicate tab") copies
+  // sessionStorage — the duplicate will share the original's TAB_ID
+  // and its flow state. Open a fresh tab instead.
+  function getTabId() {
+    let id = null;
+    try { id = sessionStorage.getItem('automator_tab_id'); } catch {}
+    if (!id) {
+      id = Math.random().toString(36).slice(2, 8);
+      try { sessionStorage.setItem('automator_tab_id', id); } catch {}
+    }
+    return id;
+  }
+  const TAB_ID = getTabId();
+  const scope  = (k) => `${k}__${TAB_ID}`;
+
+  // Shared across all tabs: Supabase auth. Sign in once, all tabs
+  // reuse the same worker session.
   const KEY_SESSION          = 'supabase_session';
-  const KEY_RUNNING          = 'is_running';
-  const KEY_ACCOUNT          = 'current_account';
-  const KEY_STARTED_AT       = 'account_started_at';
-  const KEY_PHASE            = 'phase';
-  const KEY_LOG              = 'log_tail';
-  const KEY_DOWNLOAD_DONE    = 'download_done';
-  const KEY_LAST_ACTIVITY_AT = 'last_activity_at';
+
+  // Per-tab: everything about the in-flight account and this tab's UI
+  // state. KEY_RUNNING is per-tab too so each tab has its own Start /
+  // Pause toggle — otherwise clicking Pause in tab A would stop tab B.
+  const KEY_RUNNING          = scope('is_running');
+  const KEY_ACCOUNT          = scope('current_account');
+  const KEY_STARTED_AT       = scope('account_started_at');
+  const KEY_PHASE            = scope('phase');
+  const KEY_LOG              = scope('log_tail');
+  const KEY_DOWNLOAD_DONE    = scope('download_done');
+  const KEY_LAST_ACTIVITY_AT = scope('last_activity_at');
 
   // ===========================================================
   // Tiny utilities
@@ -511,7 +537,7 @@
     const running = GM_getValue(KEY_RUNNING, false);
     const acc     = GM_getValue(KEY_ACCOUNT);
     panelEl.innerHTML = `
-      <h1>Adobe Automator</h1>
+      <h1>Adobe Automator <span style="opacity:0.5;font-weight:normal">· tab ${TAB_ID}</span></h1>
       <div class="row">Hi ${sess.user_email}</div>
       <div class="row stats" id="aut-stats">—</div>
       <div class="row">${acc ? `Current: <b>${acc.email}</b>` : 'Idle'}</div>
