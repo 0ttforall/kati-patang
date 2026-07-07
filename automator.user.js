@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.4
+// @version      0.2.5
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -744,17 +744,22 @@
       return false; // navigation expected
     }
 
-    // If we're not on the prompt URL, navigate there. This may trigger
-    // Adobe's auth flow (which we'll handle on the next page load) or,
-    // if already authenticated, load the prompt directly. Don't flip
-    // KEY_PHASE to 'editor' yet — Adobe often drops the query string on
-    // post-login redirect and lands us back at "/?postlogin=true".
-    // Setting the phase prematurely used to send runEditorFlow off on
-    // the wrong URL and stall waiting for an "Open in editor" button
-    // that only exists on the prompt URL.
-    const phase = GM_getValue(KEY_PHASE, 'login');
-    if (phase !== 'editor' && !location.search.includes('prompt=')) {
-      log('Not on prompt URL — navigating to target prompt');
+    // Decide whether we're on a page where runEditorFlow can do useful
+    // work, from the URL alone. Two shapes count:
+    //   - the prompt URL itself (has ?prompt=…)
+    //   - the editor sub-page Adobe navigates to after clicking Open in
+    //     editor (path starts with /id/)
+    // Anything else (bare /, /?postlogin=true, other landing pages) means
+    // Adobe's auth flow dropped us at home. Re-navigate to TARGET_URL.
+    // Deliberately NOT gated on KEY_PHASE — phase can be stale 'editor'
+    // from a prior attempt that Adobe interrupted with an auth redirect,
+    // which used to short-circuit this check and send runEditorFlow off
+    // on the wrong URL.
+    const onPromptUrl = location.search.includes('prompt=');
+    const onEditorUrl = /^\/(id|design|edit)\//i.test(location.pathname);
+    if (!onPromptUrl && !onEditorUrl) {
+      log(`Not on prompt/editor URL (@${location.pathname}) — navigating to target prompt`);
+      GM_setValue(KEY_PHASE, 'login'); // clear any stale 'editor' phase
       safeNavigate(TARGET_URL);
       return false;
     }
