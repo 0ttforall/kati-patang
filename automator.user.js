@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.3
+// @version      0.2.4
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -41,7 +41,7 @@
   const POLL_MS              = 500;
   const MAX_LOGIN_ITERATIONS = 30;
   const NO_WORK_WAIT_MS      = 30_000;
-  const DOWNLOAD_WAIT_MS     = 30_000;
+  const DOWNLOAD_WAIT_MS     = 60_000;
 
   // ===========================================================
   // Persisted state keys (Tampermonkey GM_setValue)
@@ -388,15 +388,40 @@
   // default filename, straight into the user's Downloads folder.
   // ===========================================================
   function setupDownloadHook() {
+    // (1) Bubbled clicks on attached <a download>/img anchors.
     const handler = (e) => {
       const acc = GM_getValue(KEY_ACCOUNT);
       if (!acc) return;
       const a = e.target.closest && e.target.closest('a[download], a[href*=".png"], a[href*=".jpg"], a[href*=".jpeg"]');
       if (!a || !a.href || a.href.startsWith('javascript:')) return;
-      log('Download click detected');
+      log('Download click detected (bubbled)');
       GM_setValue(KEY_DOWNLOAD_DONE, true);
     };
     document.addEventListener('click', handler, true);
+
+    // (2) Programmatic a.click() on unattached anchors. Adobe's SPA
+    // creates <a href="blob:..." download> in memory and calls .click()
+    // without ever inserting it into the DOM — the resulting click
+    // event never bubbles to `document`, so the listener above misses
+    // it entirely. Wrap the prototype method so we still see it.
+    const originalClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      try {
+        const acc = GM_getValue(KEY_ACCOUNT);
+        if (acc) {
+          const href = this.href || '';
+          const looksLikeDownload =
+            this.hasAttribute('download') ||
+            href.startsWith('blob:') ||
+            /\.(png|jpe?g|pdf|svg|gif|webp)(\?|$)/i.test(href);
+          if (looksLikeDownload && !href.startsWith('javascript:')) {
+            log(`Download click detected (a.click, ${href.slice(0, 40)})`);
+            GM_setValue(KEY_DOWNLOAD_DONE, true);
+          }
+        }
+      } catch {}
+      return originalClick.apply(this, arguments);
+    };
   }
 
   // ===========================================================
@@ -794,7 +819,7 @@
       }, 30_000);
       log(`Clicking download button (${dlButton.tagName.toLowerCase()}${dlButton.getAttribute('aria-label') ? ' "' + dlButton.getAttribute('aria-label') + '"' : ''})`);
       dlButton.click();
-      await sleep(3000);
+      await sleep(6000);
 
       await maybeCloseTour();
 
