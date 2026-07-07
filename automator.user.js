@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Adobe Express Automator
 // @namespace    https://github.com/0ttforall/kati-patang
-// @version      0.2.5
+// @version      0.2.6
 // @description  Distributed Adobe Express image generation worker
 // @author       0ttforall
 // @match        https://new.express.adobe.com/*
@@ -42,6 +42,13 @@
   const MAX_LOGIN_ITERATIONS = 30;
   const NO_WORK_WAIT_MS      = 30_000;
   const DOWNLOAD_WAIT_MS     = 60_000;
+  // After we detect the download click, hold on the current tab for
+  // this long before navigating away. The click event fires the instant
+  // Adobe calls a.click(); the browser still needs time to read the
+  // blob and flush bytes to disk. Navigating too soon revokes the
+  // blob URL and truncates the file — this settle wait is what turns
+  // "some files land in Downloads" into "all files land in Downloads".
+  const DOWNLOAD_SETTLE_MS   = 10_000;
 
   // ===========================================================
   // Persisted state keys (Tampermonkey GM_setValue)
@@ -858,7 +865,13 @@
         if (GM_getValue(KEY_DOWNLOAD_DONE)) break;
         await sleep(500);
       }
-      if (!GM_getValue(KEY_DOWNLOAD_DONE)) {
+      if (GM_getValue(KEY_DOWNLOAD_DONE)) {
+        // Hold on this page long enough for the browser to actually
+        // finish writing the blob to disk before adobeUiLogout below
+        // navigates us away and revokes the blob URL.
+        log(`Download click seen — settling ${DOWNLOAD_SETTLE_MS / 1000}s before navigating`);
+        await sleep(DOWNLOAD_SETTLE_MS);
+      } else {
         log('Warning: download interception did not confirm save');
       }
 
